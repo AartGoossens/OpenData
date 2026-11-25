@@ -1,8 +1,7 @@
 name: huggingface
 
 on:
-  push:
-    branches: [master]
+  push:   # any branch, so contributors' forks run it too
     paths: ["huggingface/**", ".github/workflows/huggingface.yml"]
   pull_request:
     paths: ["huggingface/**", ".github/workflows/huggingface.yml"]
