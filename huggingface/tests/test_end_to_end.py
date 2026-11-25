@@ -219,7 +219,8 @@ def test_upload_refuses_when_the_folder_changed_after_the_check(built: Path):
     assert migrate.stage_check(built, jobs=1, text_fraction=0.0, seed=0) == 0
     b = migrate.Build(built)
     assert migrate.checked_files(b)  # unchanged: fine
-    (b.repo / "README.md").write_text((b.repo / "README.md").read_text(encoding="utf-8") + "\n")
+    card = b.repo / "README.md"
+    card.write_text(card.read_text(encoding="utf-8") + "\n", encoding="utf-8", newline="\n")
     with pytest.raises(SystemExit, match="changed since it was checked"):
         migrate.checked_files(b)
 

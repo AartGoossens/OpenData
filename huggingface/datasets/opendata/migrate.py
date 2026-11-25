@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import multiprocessing
 import os
 import random
 import re
@@ -78,6 +79,10 @@ sys.path[:0] = [str(HERE), str(HERE.parents[1])]  # gcod.py next to this file; c
 
 import conventions as C  # noqa: E402
 import gcod  # noqa: E402
+
+# Worker processes start fresh, as on macOS and Windows: forking a process in which polars has
+# started threads can deadlock (Linux forks by default before Python 3.14).
+SPAWN = multiprocessing.get_context("spawn")
 
 DEFAULT_WORKDIR = HERE.parents[1] / "data"  # huggingface/data (git-ignored)
 
@@ -673,7 +678,7 @@ def stage_convert(workdir: Path, jobs: int, athletes: list[str] | None, athletes
             or m["status"] != "ok" or (m["rows"] and not b.ts_file(a).exists())]
     log(f"timeseries: {len(ids) - len(todo):,} athletes up to date, {len(todo):,} to convert")
     t0 = time.monotonic()
-    with ProcessPoolExecutor(jobs) as ex, b.manifest.open("a", encoding="utf-8", newline="\n") as mf:
+    with ProcessPoolExecutor(jobs, mp_context=SPAWN) as ex, b.manifest.open("a", encoding="utf-8", newline="\n") as mf:
         futs = {ex.submit(convert_timeseries_worker, a, sha[a], str(workdir)): a for a in todo}
         for i, f in enumerate(as_completed(futs), 1):
             if STOP.is_set():
@@ -696,7 +701,7 @@ def stage_convert(workdir: Path, jobs: int, athletes: list[str] | None, athletes
     log("metadata: collecting the metric schema and checking every JSON ...")
     forms: dict[str, set[str]] = {}
     candidates = [a for a in ids if a not in errors]
-    with ProcessPoolExecutor(jobs) as ex:
+    with ProcessPoolExecutor(jobs, mp_context=SPAWN) as ex:
         results = ex.map(metadata_forms_worker, candidates, [str(workdir)] * len(candidates),
                          [manifest[a].get("csvs", {}) for a in candidates], chunksize=8)
         for a, (fm, err) in zip(candidates, results, strict=True):
@@ -714,7 +719,7 @@ def stage_convert(workdir: Path, jobs: int, athletes: list[str] | None, athletes
     ok_ids = [a for a in ids if a not in errors]
     if errors:  # the metric schema must come from the athletes that are kept
         forms = {}
-        with ProcessPoolExecutor(jobs) as ex:
+        with ProcessPoolExecutor(jobs, mp_context=SPAWN) as ex:
             for fm, _ in ex.map(metadata_forms_worker, ok_ids, [str(workdir)] * len(ok_ids),
                                 [manifest[a].get("csvs", {}) for a in ok_ids], chunksize=8):
                 for k, v in fm.items():
@@ -772,7 +777,7 @@ def _write_metadata_tables(b: Build, sel: pl.DataFrame, ok_ids: list[str], kinds
     batch_size = 4 * jobs  # few results in flight, so they can't pile up while parts are written
     next_log = 0
     try:
-        with ProcessPoolExecutor(jobs) as ex:
+        with ProcessPoolExecutor(jobs, mp_context=SPAWN) as ex:
             for start in range(0, len(ok_ids), batch_size):
                 batch = ok_ids[start:start + batch_size]
                 results = ex.map(metadata_worker, batch, [str(workdir)] * len(batch), [kinds] * len(batch),
@@ -880,7 +885,7 @@ def pack_timeseries(b: Build, athletes: list[str], jobs: int) -> int:
     log(f"timeseries: packing {len(athletes):,} athletes into {len(expected)} part files "
         f"({len(expected) - len(todo)} already done) ...")
     t0 = time.monotonic()
-    with ProcessPoolExecutor(jobs) as ex:
+    with ProcessPoolExecutor(jobs, mp_context=SPAWN) as ex:
         futs = {ex.submit(pack_worker, str(tmp / expected[i]), [str(b.ts_file(a)) for a in plan["parts"][i]]): i
                 for i in todo}
         for n, f in enumerate(as_completed(futs), 1):
@@ -1033,7 +1038,7 @@ def stage_check(workdir: Path, jobs: int, text_fraction: float, seed: int) -> in
         f"original CSVs (text level for {len(text_ids):,}) ...")
     total = differ = 0
     if not problems:
-        with ProcessPoolExecutor(jobs) as ex:
+        with ProcessPoolExecutor(jobs, mp_context=SPAWN) as ex:
             futs = [ex.submit(check_worker, i, p, str(workdir), text_ids & set(p)) for i, p in enumerate(parts)]
             for n, f in enumerate(as_completed(futs), 1):
                 r = f.result()

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import multiprocessing
 import os
 import re
 import sys
@@ -48,6 +49,10 @@ import polars as pl  # noqa: E402
 import pyarrow.parquet as pq  # noqa: E402
 
 import conventions as C  # noqa: E402
+
+# Worker processes start fresh, as on macOS and Windows: forking a process in which polars has
+# started threads can deadlock (Linux forks by default before Python 3.14).
+SPAWN = multiprocessing.get_context("spawn")
 
 MAX_EXAMPLES = 5
 
@@ -381,7 +386,7 @@ def validate(spec_path: Path, root: Path, jobs: int, max_files: int | None,
 
     keys: dict[str, dict[tuple[str, ...], set[tuple]]] = {}
     summary = []
-    with ProcessPoolExecutor(jobs) as ex:
+    with ProcessPoolExecutor(jobs, mp_context=SPAWN) as ex:
         for name, t in ds.tables.items():
             files = table_files(root, t, findings)
             if max_files:
