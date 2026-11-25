@@ -105,7 +105,7 @@ def build(opendata: Path, out: Path) -> None:
     card = C.render_card((HERE / "README.md.tmpl").read_text(encoding="utf-8"), SPEC, {
         "n_athletes": f"{athletes.height:,}", "n_activities": f"{activities.height:,}",
         "size_category": C.size_category(n_rows)})
-    (out / "README.md").write_text(card, encoding="utf-8")
+    (out / "README.md").write_text(card, encoding="utf-8", newline="\n")
     print(f"{athletes.height:,} athletes, {activities.height:,} activities, {n_rows:,} samples -> {out}")
 
 

@@ -267,7 +267,7 @@ class Mirror:
         st = path.stat()
         line = json.dumps({"athlete_id": t.athlete_id, "sha256": t.sha256, "size": st.st_size,
                            "mtime_ns": st.st_mtime_ns, "at": datetime.now(UTC).isoformat()})
-        with self.lock, self.verified_log.open("a", encoding="utf-8") as f:
+        with self.lock, self.verified_log.open("a", encoding="utf-8", newline="\n") as f:
             f.write(line + "\n")
             f.flush()
             os.fsync(f.fileno())
@@ -424,7 +424,7 @@ class Mirror:
             "failed": self.failed,
         }
         tmp = self.status_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(status, indent=2), encoding="utf-8", newline="\n")
         os.replace(tmp, self.status_path)
 
 
@@ -673,7 +673,7 @@ def stage_convert(workdir: Path, jobs: int, athletes: list[str] | None, athletes
             or m["status"] != "ok" or (m["rows"] and not b.ts_file(a).exists())]
     log(f"timeseries: {len(ids) - len(todo):,} athletes up to date, {len(todo):,} to convert")
     t0 = time.monotonic()
-    with ProcessPoolExecutor(jobs) as ex, b.manifest.open("a", encoding="utf-8") as mf:
+    with ProcessPoolExecutor(jobs) as ex, b.manifest.open("a", encoding="utf-8", newline="\n") as mf:
         futs = {ex.submit(convert_timeseries_worker, a, sha[a], str(workdir)): a for a in todo}
         for i, f in enumerate(as_completed(futs), 1):
             if STOP.is_set():
@@ -873,7 +873,7 @@ def pack_timeseries(b: Build, athletes: list[str], jobs: int) -> int:
         if tmp.exists():
             shutil.rmtree(tmp)
         tmp.mkdir(parents=True)
-        b.parts_plan.write_text(json.dumps(plan) + "\n", encoding="utf-8")
+        b.parts_plan.write_text(json.dumps(plan) + "\n", encoding="utf-8", newline="\n")
     for leftover in tmp.glob("*.tmp"):  # a part being written when the last run stopped
         leftover.unlink()
     todo = [i for i, name in enumerate(expected) if not (tmp / name).exists()]
@@ -923,7 +923,8 @@ def write_card(repo: Path, athletes: pl.DataFrame, n_rows: int, n_metrics: int) 
         "converter_version": gcod.CONVERTER_VERSION,
         "libraries": f"polars {pl.__version__}, pyarrow {pa.__version__}",
     }
-    (repo / "README.md").write_text(C.render_card(CARD_TEMPLATE.read_text(encoding="utf-8"), SPEC, values))
+    card = C.render_card(CARD_TEMPLATE.read_text(encoding="utf-8"), SPEC, values)
+    (repo / "README.md").write_text(card, encoding="utf-8", newline="\n")
 
 
 # --- check ---------------------------------------------------------------------------
@@ -1064,7 +1065,7 @@ def stage_check(workdir: Path, jobs: int, text_fraction: float, seed: int) -> in
                   "converter": gcod.CONVERTER_VERSION, "conventions": C.VERSION, "values_compared": total,
                   "files": files}
         tmp = b.check_record.with_suffix(".tmp")
-        tmp.write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
+        tmp.write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8", newline="\n")
         tmp.replace(b.check_record)
     log("check: PASS" if ok else "check: FAIL")
     return 0 if ok else 1
@@ -1117,7 +1118,8 @@ def stage_upload_folder(b: Build, files: dict[str, dict], repo_id: str) -> Path:
         dst = folder / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         if rel == "README.md":
-            dst.write_text(card_for((b.repo / rel).read_text(encoding="utf-8"), repo_id))
+            card = card_for((b.repo / rel).read_text(encoding="utf-8"), repo_id)
+            dst.write_text(card, encoding="utf-8", newline="\n")
         else:
             try:
                 os.link(b.repo / rel, dst)
@@ -1184,7 +1186,7 @@ def stage_upload(workdir: Path, repo_id: str) -> int:
     if problems:
         log(f"upload: FAIL, {len(problems)} files on the Hub don't match the checked dataset folder")
         return 1
-    with b.uploads.open("a", encoding="utf-8") as f:
+    with b.uploads.open("a", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps({"repo_id": repo_id, "commit": commit.oid, "private": private,
                             "uploaded_at": datetime.now(UTC).isoformat(timespec="seconds"),
                             "converter": gcod.CONVERTER_VERSION, "conventions": C.VERSION,

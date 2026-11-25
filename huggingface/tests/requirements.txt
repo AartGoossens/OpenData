@@ -6,3 +6,4 @@ huggingface_hub>=2.4
 polars>=1.20
 pyarrow>=21
 pyyaml>=6
+tzdata; sys_platform == "win32"   # time zones for polars datetimes (Windows has no tz database)

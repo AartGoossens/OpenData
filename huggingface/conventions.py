@@ -726,7 +726,7 @@ if __name__ == "__main__":
     text = DOCS.read_text(encoding="utf-8")
     new = _docs_with_section(text)
     if "--write-docs" in sys.argv:
-        DOCS.write_text(new, encoding="utf-8")
+        DOCS.write_text(new, encoding="utf-8", newline="\n")
         print(f"updated {DOCS}")
     elif "--check-docs" in sys.argv:
         if new != text:
