@@ -505,7 +505,7 @@ class SpecError(ValueError):
 
 def load_dataset_spec(path: Path) -> DatasetSpec:
     """Read and check a dataset.toml. Raises SpecError listing every problem found."""
-    raw = tomllib.loads(Path(path).read_text())
+    raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     errors: list[str] = []
     ds = raw.get("dataset", {})
     for k in ("name", "repo_id", "pretty_name", "license", "conventions"):
@@ -723,10 +723,10 @@ def _docs_with_section(text: str) -> str:
 if __name__ == "__main__":
     import sys
 
-    text = DOCS.read_text()
+    text = DOCS.read_text(encoding="utf-8")
     new = _docs_with_section(text)
     if "--write-docs" in sys.argv:
-        DOCS.write_text(new)
+        DOCS.write_text(new, encoding="utf-8")
         print(f"updated {DOCS}")
     elif "--check-docs" in sys.argv:
         if new != text:

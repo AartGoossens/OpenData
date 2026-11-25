@@ -92,7 +92,7 @@ def check_file(path: Path, root: Path, ds: C.DatasetSpec, t: C.TableSpec,
                relation_cols: list[tuple[str, ...]]) -> FileResult:
     _low_priority()
     f = Findings()
-    rel = str(path.relative_to(root))
+    rel = path.relative_to(root).as_posix()
     pf = pq.ParquetFile(path)
     schema = pf.schema_arrow
     md = pf.metadata
@@ -250,7 +250,10 @@ def check_file(path: Path, root: Path, ds: C.DatasetSpec, t: C.TableSpec,
 
 
 def _low_priority() -> None:
-    """Validation is heavy on big datasets: run workers at low CPU priority."""
+    """Validation is heavy on big datasets: run workers at low CPU priority (POSIX only; on
+    Windows they run at normal priority)."""
+    if not hasattr(os, "getpriority"):
+        return
     try:
         if os.getpriority(os.PRIO_PROCESS, 0) < 10:
             os.nice(10)
@@ -267,7 +270,7 @@ def table_files(root: Path, t: C.TableSpec, f: Findings) -> list[Path]:
     files = sorted(root.glob(t.glob))
     stray = sorted(set(p for p in folder.rglob("*") if p.is_file()) - set(files))
     for p in stray:
-        f.add(t.name, "layout", f"unexpected file {p.relative_to(root)}")
+        f.add(t.name, "layout", f"unexpected file {p.relative_to(root).as_posix()}")
     if t.cluster_by and [p.name for p in files] != [C.part_name(i) for i in range(len(files))]:
         f.add(t.name, "layout", f"files {[p.name for p in files][:3]}...: a clustered table is in "
                                 f"{C.part_name(0)}, {C.part_name(1)}, ... numbered from 0 without gaps")
@@ -283,7 +286,7 @@ def check_card(root: Path, ds: C.DatasetSpec, f: Findings) -> None:
     if not card.exists():
         f.add("card", "card", "no README.md")
         return
-    text = card.read_text()
+    text = card.read_text(encoding="utf-8")
     m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
     if not m:
         f.add("card", "card", "README.md has no YAML header")

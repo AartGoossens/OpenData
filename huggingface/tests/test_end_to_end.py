@@ -76,8 +76,8 @@ def test_packing_is_skipped_when_nothing_changed(built: Path, capsys):
 
 def test_athletes_converted_by_an_older_converter_are_converted_again(built: Path, capsys):
     mf = built / "build" / "manifest.jsonl"
-    old = [{**json.loads(line), "converter": "0.0.1"} for line in mf.read_text().splitlines()]
-    mf.write_text("".join(json.dumps(r) + "\n" for r in old))
+    old = [{**json.loads(line), "converter": "0.0.1"} for line in mf.read_text(encoding="utf-8").splitlines()]
+    mf.write_text("".join(json.dumps(r) + "\n" for r in old), encoding="utf-8")
     assert migrate.stage_convert(built, jobs=1, athletes=None, athletes_from=None, allow_errors=False) == 0
     assert "0 athletes up to date, 3 to convert" in capsys.readouterr().out
     manifest = migrate.load_manifest(mf)
@@ -219,7 +219,7 @@ def test_upload_refuses_when_the_folder_changed_after_the_check(built: Path):
     assert migrate.stage_check(built, jobs=1, text_fraction=0.0, seed=0) == 0
     b = migrate.Build(built)
     assert migrate.checked_files(b)  # unchanged: fine
-    (b.repo / "README.md").write_text((b.repo / "README.md").read_text() + "\n")
+    (b.repo / "README.md").write_text((b.repo / "README.md").read_text(encoding="utf-8") + "\n")
     with pytest.raises(SystemExit, match="changed since it was checked"):
         migrate.checked_files(b)
 
@@ -241,10 +241,11 @@ def test_the_upload_folder_is_the_checked_folder_with_the_card_for_the_target_re
     assert set(migrate.folder_files(folder)) == set(files)
     part = "data/timeseries/part-00000.parquet"
     assert (folder / part).stat().st_ino == (b.repo / part).stat().st_ino  # a hard link, not a copy
-    card = (folder / "README.md").read_text()
+    card = (folder / "README.md").read_text(encoding="utf-8")
     assert "hf://datasets/someone/opendata-test/data/" in card
     assert f'"{migrate.SPEC.repo_id}"' not in card and f"datasets/{migrate.SPEC.repo_id}/" not in card
-    assert card.replace("someone/opendata-test", migrate.SPEC.repo_id) == (b.repo / "README.md").read_text()
+    original = (b.repo / "README.md").read_text(encoding="utf-8")
+    assert card.replace("someone/opendata-test", migrate.SPEC.repo_id) == original
 
 
 def test_remote_differences():
@@ -274,7 +275,7 @@ def test_every_file_the_card_points_at_exists(built: Path):
     import re
 
     repo = built / "build" / "opendata"
-    card = re.sub(r'"\s*\n\s*"', "", (repo / "README.md").read_text())  # join "..." "..." literals
+    card = re.sub(r'"\s*\n\s*"', "", (repo / "README.md").read_text(encoding="utf-8"))  # join "..." "..." literals
     paths = re.findall(r"hf://datasets/[^/]+/[^/]+/([^\"']+)", card)
     assert len(paths) >= 4 and "data/timeseries/*.parquet" in paths
     assert A1 in card or A2 in card  # the examples read an athlete that is in the dataset

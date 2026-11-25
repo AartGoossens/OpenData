@@ -255,7 +255,7 @@ class Mirror:
     def _load_verified(self) -> dict[str, dict]:
         out = {}
         if self.verified_log.exists():
-            for line in self.verified_log.read_text().splitlines():
+            for line in self.verified_log.read_text(encoding="utf-8").splitlines():
                 try:
                     r = json.loads(line)
                     out[r["athlete_id"]] = r
@@ -267,7 +267,7 @@ class Mirror:
         st = path.stat()
         line = json.dumps({"athlete_id": t.athlete_id, "sha256": t.sha256, "size": st.st_size,
                            "mtime_ns": st.st_mtime_ns, "at": datetime.now(UTC).isoformat()})
-        with self.lock, self.verified_log.open("a") as f:
+        with self.lock, self.verified_log.open("a", encoding="utf-8") as f:
             f.write(line + "\n")
             f.flush()
             os.fsync(f.fileno())
@@ -424,7 +424,7 @@ class Mirror:
             "failed": self.failed,
         }
         tmp = self.status_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(status, indent=2))
+        tmp.write_text(json.dumps(status, indent=2), encoding="utf-8")
         os.replace(tmp, self.status_path)
 
 
@@ -530,7 +530,7 @@ class Build:
 def load_manifest(path: Path) -> dict[str, dict]:
     out: dict[str, dict] = {}
     if path.exists():
-        for line in path.read_text().splitlines():
+        for line in path.read_text(encoding="utf-8").splitlines():
             try:
                 r = json.loads(line)
                 out[r["athlete_id"]] = r  # last line wins
@@ -588,7 +588,10 @@ def convert_timeseries_worker(athlete_id: str, sha256: str, workdir: str) -> dic
 
 
 def _low_priority() -> None:
-    """Run heavy work at low CPU priority so the machine stays usable."""
+    """Run heavy work at low CPU priority so the machine stays usable (POSIX only; on Windows it
+    runs at normal priority)."""
+    if not hasattr(os, "getpriority"):
+        return
     try:
         if os.getpriority(os.PRIO_PROCESS, 0) < 10:
             os.nice(10)
@@ -637,14 +640,15 @@ def select_athletes(workdir: Path, listing: pl.DataFrame, athletes: list[str] | 
         if athletes_from.suffix == ".parquet":
             wanted |= set(pl.read_parquet(athletes_from)["athlete_id"].to_list())
         else:
-            wanted |= {s.strip() for s in athletes_from.read_text().split() if s.strip()}
+            wanted |= {s.strip() for s in athletes_from.read_text(encoding="utf-8").split() if s.strip()}
     if wanted:
         unknown = wanted - set(ath["athlete_id"])
         if unknown:
             raise SystemExit(f"not in the OSF listing: {sorted(unknown)[:5]} ({len(unknown)} total)")
         ath = ath.filter(pl.col("athlete_id").is_in(sorted(wanted)))
-    verified = {json.loads(line)["athlete_id"] for line in (workdir / "osf" / "verified.jsonl").read_text().splitlines()
-                if line.strip()} if (workdir / "osf" / "verified.jsonl").exists() else set()
+    verified_log = workdir / "osf" / "verified.jsonl"
+    verified = {json.loads(line)["athlete_id"] for line in verified_log.read_text(encoding="utf-8").splitlines()
+                if line.strip()} if verified_log.exists() else set()
     missing = [a for a in ath["athlete_id"] if a not in verified or not Build(workdir).zip_path(a).exists()]
     if missing:
         raise SystemExit(f"{len(missing)} selected zips are not mirrored yet (e.g. {missing[:3]}); "
@@ -669,7 +673,7 @@ def stage_convert(workdir: Path, jobs: int, athletes: list[str] | None, athletes
             or m["status"] != "ok" or (m["rows"] and not b.ts_file(a).exists())]
     log(f"timeseries: {len(ids) - len(todo):,} athletes up to date, {len(todo):,} to convert")
     t0 = time.monotonic()
-    with ProcessPoolExecutor(jobs) as ex, b.manifest.open("a") as mf:
+    with ProcessPoolExecutor(jobs) as ex, b.manifest.open("a", encoding="utf-8") as mf:
         futs = {ex.submit(convert_timeseries_worker, a, sha[a], str(workdir)): a for a in todo}
         for i, f in enumerate(as_completed(futs), 1):
             if STOP.is_set():
@@ -838,7 +842,7 @@ def timeseries_plan(b: Build, athletes: list[str]) -> dict:
 
 
 def load_plan(b: Build) -> dict | None:
-    return json.loads(b.parts_plan.read_text()) if b.parts_plan.exists() else None
+    return json.loads(b.parts_plan.read_text(encoding="utf-8")) if b.parts_plan.exists() else None
 
 
 def pack_worker(out: str, sources: list[str]) -> int:
@@ -869,7 +873,7 @@ def pack_timeseries(b: Build, athletes: list[str], jobs: int) -> int:
         if tmp.exists():
             shutil.rmtree(tmp)
         tmp.mkdir(parents=True)
-        b.parts_plan.write_text(json.dumps(plan) + "\n")
+        b.parts_plan.write_text(json.dumps(plan) + "\n", encoding="utf-8")
     for leftover in tmp.glob("*.tmp"):  # a part being written when the last run stopped
         leftover.unlink()
     todo = [i for i, name in enumerate(expected) if not (tmp / name).exists()]
@@ -919,7 +923,7 @@ def write_card(repo: Path, athletes: pl.DataFrame, n_rows: int, n_metrics: int) 
         "converter_version": gcod.CONVERTER_VERSION,
         "libraries": f"polars {pl.__version__}, pyarrow {pa.__version__}",
     }
-    (repo / "README.md").write_text(C.render_card(CARD_TEMPLATE.read_text(), SPEC, values))
+    (repo / "README.md").write_text(C.render_card(CARD_TEMPLATE.read_text(encoding="utf-8"), SPEC, values))
 
 
 # --- check ---------------------------------------------------------------------------
@@ -1060,7 +1064,7 @@ def stage_check(workdir: Path, jobs: int, text_fraction: float, seed: int) -> in
                   "converter": gcod.CONVERTER_VERSION, "conventions": C.VERSION, "values_compared": total,
                   "files": files}
         tmp = b.check_record.with_suffix(".tmp")
-        tmp.write_text(json.dumps(record, indent=1) + "\n")
+        tmp.write_text(json.dumps(record, indent=1) + "\n", encoding="utf-8")
         tmp.replace(b.check_record)
     log("check: PASS" if ok else "check: FAIL")
     return 0 if ok else 1
@@ -1083,7 +1087,7 @@ def checked_files(b: Build) -> dict[str, dict]:
     """The files `check` passed, provided the dataset folder still is exactly that; else stop."""
     if not b.check_record.exists():
         raise SystemExit("upload: no passing check of this build; run `check` first")
-    rec = json.loads(b.check_record.read_text())
+    rec = json.loads(b.check_record.read_text(encoding="utf-8"))
     if rec.get("converter") != gcod.CONVERTER_VERSION:
         raise SystemExit(f"upload: the check was of converter {rec.get('converter')}, this is "
                          f"{gcod.CONVERTER_VERSION}; run `convert` and `check` again")
@@ -1113,7 +1117,7 @@ def stage_upload_folder(b: Build, files: dict[str, dict], repo_id: str) -> Path:
         dst = folder / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
         if rel == "README.md":
-            dst.write_text(card_for((b.repo / rel).read_text(), repo_id))
+            dst.write_text(card_for((b.repo / rel).read_text(encoding="utf-8"), repo_id))
         else:
             try:
                 os.link(b.repo / rel, dst)
@@ -1180,7 +1184,7 @@ def stage_upload(workdir: Path, repo_id: str) -> int:
     if problems:
         log(f"upload: FAIL, {len(problems)} files on the Hub don't match the checked dataset folder")
         return 1
-    with b.uploads.open("a") as f:
+    with b.uploads.open("a", encoding="utf-8") as f:
         f.write(json.dumps({"repo_id": repo_id, "commit": commit.oid, "private": private,
                             "uploaded_at": datetime.now(UTC).isoformat(timespec="seconds"),
                             "converter": gcod.CONVERTER_VERSION, "conventions": C.VERSION,

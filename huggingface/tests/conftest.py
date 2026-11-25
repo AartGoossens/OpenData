@@ -96,7 +96,7 @@ def write_workdir(workdir: Path, zip_paths: list[Path]) -> None:
         verified.append(json.dumps({"athlete_id": z.stem, "sha256": sha, "size": st.st_size,
                                     "mtime_ns": st.st_mtime_ns}))
     pl.DataFrame(rows).write_parquet(workdir / "osf" / "listing.parquet")
-    (workdir / "osf" / "verified.jsonl").write_text("\n".join(verified) + "\n")
+    (workdir / "osf" / "verified.jsonl").write_text("\n".join(verified) + "\n", encoding="utf-8")
 
 
 @pytest.fixture

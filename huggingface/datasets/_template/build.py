@@ -102,10 +102,10 @@ def build(opendata: Path, out: Path) -> None:
                       dataset=SPEC.name, table_name=name, encodings=t.encodings)
 
     n_rows = int(activities["duration_s"].sum())
-    card = C.render_card((HERE / "README.md.tmpl").read_text(), SPEC, {
+    card = C.render_card((HERE / "README.md.tmpl").read_text(encoding="utf-8"), SPEC, {
         "n_athletes": f"{athletes.height:,}", "n_activities": f"{activities.height:,}",
         "size_category": C.size_category(n_rows)})
-    (out / "README.md").write_text(card)
+    (out / "README.md").write_text(card, encoding="utf-8")
     print(f"{athletes.height:,} athletes, {activities.height:,} activities, {n_rows:,} samples -> {out}")
 
 

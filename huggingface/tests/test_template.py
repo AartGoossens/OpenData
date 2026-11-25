@@ -57,10 +57,10 @@ def test_the_template_resamples_to_whole_seconds(example: Path):
 
 def test_the_template_refuses_to_build_into_a_folder_with_files(opendata: Path, tmp_path: Path):
     (tmp_path / "out").mkdir()
-    (tmp_path / "out" / "x").write_text("keep me")
+    (tmp_path / "out" / "x").write_text("keep me", encoding="utf-8")
     with pytest.raises(SystemExit, match="not empty"):
         load_build().build(opendata, tmp_path / "out")
-    assert (tmp_path / "out" / "x").read_text() == "keep me"
+    assert (tmp_path / "out" / "x").read_text(encoding="utf-8") == "keep me"
 
 
 def test_relations_to_another_dataset_need_it(example: Path, capsys):
@@ -92,10 +92,10 @@ def test_an_activity_the_other_dataset_does_not_have_fails(example: Path, openda
 
 
 def test_cross_dataset_relations_are_checked_in_the_spec(tmp_path: Path):
-    text = SPEC.read_text()
+    text = SPEC.read_text(encoding="utf-8")
     bad = text.replace('references = "opendata.activities"', 'references = "example.activities"') \
               .replace('references = "opendata.athletes"', 'references = "Open-Data.athletes"')
-    (tmp_path / "dataset.toml").write_text(bad)
+    (tmp_path / "dataset.toml").write_text(bad, encoding="utf-8")
     with pytest.raises(C.SpecError) as e:
         C.load_dataset_spec(tmp_path / "dataset.toml")
     assert "without the dataset name" in str(e.value) and "`<dataset>.<table>`" in str(e.value)
@@ -103,7 +103,7 @@ def test_cross_dataset_relations_are_checked_in_the_spec(tmp_path: Path):
 
 
 def test_the_card_has_no_placeholders_left_and_a_data_dictionary(example: Path):
-    card = (example / "README.md").read_text()
+    card = (example / "README.md").read_text(encoding="utf-8")
     assert "{{" not in card
     assert "### `timeseries`" in card and "On a 1 s grid" in card
 
@@ -128,3 +128,13 @@ def test_the_validator_command_line_takes_another_dataset(example: Path, opendat
     with pytest.raises(SystemExit) as e:
         validate.main()
     assert e.value.code == 1
+
+
+@pytest.mark.parametrize("module", [validate, migrate])
+def test_lowering_the_priority_works_without_posix_priorities(module, monkeypatch):
+    """Windows has no os.getpriority or os.nice: the tools then run at normal priority."""
+    import os
+
+    for name in ("getpriority", "nice", "PRIO_PROCESS"):
+        monkeypatch.delattr(os, name, raising=False)
+    module._low_priority()
