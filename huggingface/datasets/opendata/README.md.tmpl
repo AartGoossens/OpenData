@@ -105,7 +105,11 @@ as `4.94066e-324`, written as `0` here) are listed with their exact Float64 valu
 `timeseries_exceptions` (`athlete_id, activity_id, row_in_activity, column, source_value`).
 
 **activities**: `start_time_utc` comes from the JSON; `utc_offset_minutes` is derived by
-matching it to the local-time CSV name. `sport` is free text as entered in GoldenCheetah
+matching it to the local-time CSV name. The release has no other link between a ride in the JSON
+and its CSV, so the converter links a ride to a CSV whose name is its UTC start plus a whole
+quarter-hour offset within 14 hours. Where rides and CSVs compete (a ride listed twice at two
+UTC times, a file exported twice), it picks the assignment in which rides fit their CSV's duration
+and distance and use the athlete's usual offset. `sport` is free text as entered in GoldenCheetah
 (`Bike`, `bike`, `Rennrad`, `VirtualRide`, empty, ...). `data_flags` is GoldenCheetah's
 15-character availability string (`T`ime, `D`istance, `S`peed, `P`ower, `H`eart rate,
 `C`adence, ...). Metric values given by GoldenCheetah as `[value, weight]` pairs are split into

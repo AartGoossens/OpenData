@@ -1,7 +1,7 @@
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["datasets>=4", "duckdb>=1.1", "huggingface_hub>=2.4", "httpx>=0.27", "polars[rt64]>=1.33",
-#                 "pyarrow>=21"]
+#                 "pyarrow>=21", "tzdata; sys_platform == 'win32'"]
 # ///
 """Read a dataset on the Hugging Face Hub the way its users will, and check what comes back.
 

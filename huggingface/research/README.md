@@ -29,7 +29,8 @@ research/
 │   ├── 10_benchmark_columns.py     per-column representations (f64/f32/metres/int units)
 │   ├── 11_benchmark_distance_delta.py  cumulative vs per-sample distance
 │   ├── 13_quirk_census.py          every quirk in all 6,613 zips, with the production converter
-│   └── 14_hub_layouts.py           time series layouts on the Hub: files × row groups × readers
+│   ├── 14_hub_layouts.py           time series layouts on the Hub: files × row groups × readers
+│   └── 15_ride_linking.py          linking JSON rides to CSVs: greedy by offset vs exact by fit
 ├── share/
 │   └── gcod_parquet.py             self-contained script for collaborators: raw zip → opendata
 │                                   layout, with an exactness check
@@ -55,4 +56,6 @@ uv run datasets/opendata/migrate.py mirror && uv run research/explore/13_quirk_c
 # after `migrate.py convert`; upload needs write access to a scratch dataset repo
 uv run research/explore/14_hub_layouts.py build && uv run research/explore/14_hub_layouts.py upload --repo <repo>
 uv run research/explore/14_hub_layouts.py bench --repo <repo> && uv run research/explore/14_hub_layouts.py report
+# on a converter 0.4.0 build (the old linking rule)
+uv run research/explore/15_ride_linking.py data --report research/reports/15_ride_linking.md
 ```

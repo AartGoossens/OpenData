@@ -36,12 +36,69 @@ def test_offsets_are_whole_quarter_hours_within_14_hours():
     utc = [datetime(2019, 1, 1, 12, 0, tzinfo=UTC)]
     assert gcod.match_rides(utc, ["2019_01_01_17_45_00"]) == [("2019_01_01_17_45_00", 5 * 3600 + 45 * 60)]
     assert gcod.match_rides(utc, ["2019_01_01_12_10_00"]) == [(None, None)]   # not a quarter hour
+    assert gcod.match_rides(utc, ["2019_01_02_02_00_00"]) == [("2019_01_02_02_00_00", 14 * 3600)]
+    assert gcod.match_rides(utc, ["2018_12_31_22_00_00"]) == [("2018_12_31_22_00_00", -14 * 3600)]  # a day early
     assert gcod.match_rides(utc, ["2019_01_02_03_00_00"]) == [(None, None)]   # 15 h: too far
 
 
-def test_closest_offset_wins_when_two_csvs_could_match():
+def test_without_metrics_the_smallest_offset_wins():
     utc = [datetime(2019, 1, 1, 12, 0, tzinfo=UTC)]
     assert gcod.match_rides(utc, ["2019_01_01_14_00_00", "2019_01_01_13_00_00"])[0][0] == "2019_01_01_13_00_00"
+
+
+def lengths(rides: list[float], csvs: dict[str, float]):
+    """A misfit function for rides of these durations and CSVs of these lengths (seconds)."""
+    return lambda i, s: abs(rides[i] - csvs[s]) / 10
+
+
+def test_rides_link_to_the_csv_they_fit_not_the_smallest_offset():
+    # Two rides an hour apart and two CSVs an hour apart, all at UTC-5: the smallest |offset| (-4 h)
+    # would give the 11-minute ride the 91-minute file and the other way round.
+    utc = [datetime(2018, 9, 11, 15, 7, 14, tzinfo=UTC), datetime(2018, 9, 11, 16, 7, 14, tzinfo=UTC)]
+    csvs = {"2018_09_11_10_07_14": 657, "2018_09_11_11_07_14": 5467}
+    links = gcod.match_rides(utc, list(csvs), lengths([658, 5468], csvs))
+    assert links == [("2018_09_11_10_07_14", -5 * 3600), ("2018_09_11_11_07_14", -5 * 3600)]
+
+
+def test_a_ride_listed_twice_links_at_the_athletes_own_offset():
+    # The athlete rides at UTC-5; one ride is listed twice, at UTC-5 and at UTC-12, and fits either way.
+    days = [datetime(2017, 8, d, 17, 45, 15, tzinfo=UTC) for d in (14, 16, 20, 22)]
+    twice = [datetime(2017, 8, 18, 17, 45, 15, tzinfo=UTC), datetime(2017, 8, 19, 0, 45, 15, tzinfo=UTC)]
+    utc = days[:2] + twice + days[2:]
+    csvs = {f"2017_08_{d}_12_45_15": 3600 for d in (14, 16, 18, 20, 22)}
+    links = gcod.match_rides(utc, list(csvs), lengths([3600] * 6, csvs))
+    assert links[2] == ("2017_08_18_12_45_15", -5 * 3600)
+    assert links[3] == (None, None)  # the copy at UTC-12 has no CSV of its own
+
+
+def test_an_early_wrong_link_does_not_leave_a_fitting_ride_without_its_csv():
+    # Ride 0 fits both CSVs, ride 1 only the first. Taking the closest offset first gives ride 0 the
+    # first CSV and leaves ride 1 without one; the exact assignment links both.
+    utc = [datetime(2019, 5, 1, 9, 0, tzinfo=UTC), datetime(2019, 5, 1, 8, 0, tzinfo=UTC)]
+    csvs = {"2019_05_01_10_00_00": 3600, "2019_05_01_12_00_00": 3600}
+    fits = {(0, "2019_05_01_10_00_00"), (0, "2019_05_01_12_00_00"), (1, "2019_05_01_10_00_00")}
+    links = gcod.match_rides(utc, list(csvs), lambda i, s: 0.0 if (i, s) in fits else 5.0)
+    assert links == [("2019_05_01_12_00_00", 3 * 3600), ("2019_05_01_10_00_00", 2 * 3600)]
+
+
+def test_a_ride_that_does_not_fit_its_only_csv_still_links():
+    utc = [datetime(2019, 1, 1, 12, 0, tzinfo=UTC)]
+    assert gcod.match_rides(utc, ["2019_01_01_13_00_00"], lambda i, s: 50.0) == [("2019_01_01_13_00_00", 3600)]
+
+
+def test_equal_choices_link_in_json_and_activity_id_order():
+    utc = [datetime(2019, 1, 1, 12, 0, tzinfo=UTC)] * 2
+    links = gcod.match_rides(utc, ["2019_01_01_13_00_00~2", "2019_01_01_13_00_00"], lambda i, s: 0.0)
+    assert links == [("2019_01_01_13_00_00", 3600), ("2019_01_01_13_00_00~2", 3600)]
+
+
+def test_misfit_is_relative_to_the_tolerance():
+    ride = {"METRICS": {"workout_time": "3605", "total_distance": "30.0"}}
+    assert gcod.ride_misfit(ride, {"secs": 3600.0, "km": 30.0}) <= 1   # a 5 s recording interval fits
+    assert gcod.ride_misfit(ride, {"secs": 3000.0, "km": 30.0}) > 1
+    assert gcod.ride_misfit(ride, {"secs": 3600.0, "km": 20.0}) > 1
+    assert gcod.ride_misfit({"METRICS": {}}, {"secs": 3600.0, "km": 30.0}) == float("inf")
+    assert gcod.ride_misfit(ride, None) == float("inf")
 
 
 # --- activity ids ----------------------------------------------------------------------

@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["polars>=1.20", "pyarrow>=21", "pyyaml>=6"]
+# dependencies = ["polars>=1.20", "pyarrow>=21", "pyyaml>=6", "tzdata; sys_platform == 'win32'"]
 # ///
 """Check a built dataset against its dataset.toml and the shared conventions.
 

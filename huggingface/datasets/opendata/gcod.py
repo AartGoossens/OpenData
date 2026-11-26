@@ -11,11 +11,14 @@ GcodError instead of being guessed at. Every quirk handled here was found in the
 
 from __future__ import annotations
 
+import bisect
 import io
 import json
+import math
 import re
 import unicodedata
 import zipfile
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -25,7 +28,7 @@ from typing import Any
 import polars as pl
 
 # Bump when the output for the same input changes; migrate.py then rebuilds affected files.
-CONVERTER_VERSION = "0.4.0"
+CONVERTER_VERSION = "0.5.0"
 
 ATHLETE_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 # Activity CSV member names: the local start time YYYY_MM_DD_HH_MM_SS, usually + `.csv`. GoldenCheetah
@@ -50,12 +53,24 @@ LIST_METRICS = {
     "cadence_dist", "cadence_dist_bins", "power_dist", "power_dist_bins", "SDNN", "SDANN",
 }
 
-# Linking JSON rides (UTC `date`) to CSVs (local start time in the name): same mm:ss, offset a
-# whole quarter-hour within +-14 h; greedy by smallest |offset|. Links 99.9% in the sample.
-MAX_OFFSET_S = 14 * 3600
-# A ride "fits" a CSV when its duration and distance metrics agree with the CSV's last `secs` and
-# `km` within these tolerances (absolute, or relative, whichever is larger).
-FIT_TIME_S, FIT_DISTANCE_KM, FIT_RELATIVE = 2.0, 0.01, 0.001
+# Linking JSON rides to CSVs (see match_rides). The release has no key between them: a ride's
+# `date` is its UTC start, a CSV's name its local start. A CSV is a candidate for a ride when the
+# two differ by a whole quarter-hour within 14 hours. That is wider than the civil time zones
+# (UTC-12 to UTC+14) on purpose: some CSVs are named a day early, UTC+10 appearing as UTC-14, and
+# their rides fit them to the second.
+MIN_OFFSET_S, MAX_OFFSET_S = -14 * 3600, 14 * 3600
+# A ride fits a CSV when its duration and distance metrics agree with the CSV's last `secs` and
+# `km` within these tolerances (absolute, or relative, whichever is larger). 98.7% of the rides with
+# a single candidate fit; the others are mostly rides whose metrics GoldenCheetah computed from an
+# edited or differently recorded file. Ambiguous links decide the same at 5, 10 or 30 s
+# (research/reports/15_ride_linking.md).
+FIT_TIME_S, FIT_DISTANCE_KM, FIT_RELATIVE = 10.0, 0.05, 0.01
+# An offset is the athlete's own when it is within an hour (daylight saving) of the offset of the
+# nearest unambiguous rides before or after.
+SAME_ZONE_S = 3600
+# Exact assignment within a group of rides and CSVs that compete for each other; the largest group
+# in the release has 13 rides. A guard against a pathological input, not a limit that is reached.
+MAX_LINK_STATES = 1_000_000
 
 
 class GcodError(Exception):
@@ -258,32 +273,122 @@ def parse_local(activity_id: str) -> datetime | None:
 
 
 def match_rides(rides_utc: list[datetime | None], csv_ids: list[str],
-                fits: Callable[[int, str], bool] | None = None) -> list[tuple[str | None, int | None]]:
+                misfit: Callable[[int, str], float] | None = None) -> list[tuple[str | None, int | None]]:
     """For each JSON ride: (activity_id of its CSV, local-minus-UTC offset in seconds), or (None, None).
 
-    One CSV per ride and one ride per CSV, smallest |offset| first. Where that ties (two rides with
-    the same start time, or two CSVs with the same name), a ride that `fits(ride, csv)` comes
-    first, then JSON order and activity_id order."""
-    local = {s: parse_local(s) for s in csv_ids}
-    cands = []
+    A CSV is a candidate for a ride when its local start time is the ride's UTC start plus a whole
+    quarter-hour offset within 14 hours. Most rides have one candidate that has no other ride:
+    they link. Where rides and CSVs compete (a ride listed twice at two UTC times, a file exported
+    twice, two rides an hour apart, ...), each group of competing rides and CSVs gets the assignment
+    that is best by, in this order, summed over its links:
+
+    1. links whose ride fits the CSV: `misfit(ride, csv) <= 1` (duration and distance agree);
+    2. links at the athlete's own offset: within an hour of the nearest unambiguous, fitting links
+       before or after the ride (daylight saving moves an offset by an hour);
+    3. the number of links;
+    4. closeness to those neighbours' offsets, then the misfit, then the smallest |offset|.
+
+    Then JSON order and activity_id order decide. The assignment is exact, not greedy: one wrong
+    link taken early can't leave a fitting ride without its CSV.
+    """
+    misfit = misfit or (lambda i, s: math.inf)
+    by_key: dict[tuple[int, int], list[tuple[str, datetime]]] = defaultdict(list)
+    for s in sorted(csv_ids):
+        if (lt := parse_local(s)) is not None:
+            by_key[lt.minute % 15, lt.second].append((s, lt))
+    cands = []  # (ride, csv, offset_s, misfit)
     for i, u in enumerate(rides_utc):
         if u is None:
             continue
-        for s, lt in local.items():
-            if lt is None:
-                continue
+        for s, lt in by_key.get((u.minute % 15, u.second), ()):
             off = int((lt - u).total_seconds())
-            if abs(off) <= MAX_OFFSET_S and off % 900 == 0:
-                cands.append((abs(off), not (fits and fits(i, s)), i, s, off))
-    cands.sort()
-    used_r, used_c, out = set(), set(), {}
-    for _, _, i, s, off in cands:
-        if i in used_r or s in used_c:
-            continue
-        used_r.add(i)
-        used_c.add(s)
-        out[i] = (s, off)
+            if MIN_OFFSET_S <= off <= MAX_OFFSET_S and off % 900 == 0:
+                cands.append((i, s, off, misfit(i, s)))
+    n_ride, n_csv = Counter(c[0] for c in cands), Counter(c[1] for c in cands)
+    out: dict[int, tuple[str, int]] = {}
+    anchors = []  # (UTC start, offset) of the unambiguous links that fit
+    groups: list[tuple[int, str, int, float]] = []
+    for i, s, off, m in cands:
+        if n_ride[i] == 1 and n_csv[s] == 1:
+            out[i] = (s, off)
+            if m <= 1:
+                anchors.append((rides_utc[i], off))
+        else:
+            groups.append((i, s, off, m))
+    anchors.sort()
+    times = [t for t, _ in anchors]
+
+    def score(i: int, off: int, m: float) -> tuple:
+        k = bisect.bisect_left(times, rides_utc[i])
+        near = [anchors[j][1] for j in (k - 1, k) if 0 <= j < len(anchors)]
+        dev = min((abs(off - a) for a in near), default=math.inf)
+        return (m <= 1, dev <= SAME_ZONE_S, 1, -min(dev, 86400), -min(m, 1e6), -abs(off))
+
+    for group in _competing_groups(groups):
+        for i, s, off in _best_assignment([(i, s, off, score(i, off, m)) for i, s, off, m in group]):
+            out[i] = (s, off)
     return [out.get(i, (None, None)) for i in range(len(rides_utc))]
+
+
+def _competing_groups(cands: list[tuple]) -> list[list[tuple]]:
+    """Candidates (ride, csv, ...) grouped into connected groups: rides that share CSVs, and CSVs
+    that share rides, directly or through others."""
+    parent: dict[tuple, tuple] = {}
+
+    def root(x: tuple) -> tuple:
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i, s, *_ in cands:
+        a, b = root(("ride", i)), root(("csv", s))
+        if a != b:
+            parent[a] = b
+    groups: dict[tuple, list[tuple]] = defaultdict(list)
+    for c in cands:
+        groups[root(("ride", c[0]))].append(c)
+    return list(groups.values())
+
+
+def _best_assignment(cands: list[tuple[int, str, int, tuple]]) -> list[tuple[int, str, int]]:
+    """The links (ride, csv, offset) with the largest summed score: one CSV per ride and one ride per
+    CSV. Exact, by dynamic programming over the rides in JSON order; on equal scores an earlier ride
+    gets the CSV that sorts first."""
+    by_ride: dict[int, list[tuple[str, int, tuple]]] = defaultdict(list)
+    for i, s, off, sc in cands:
+        by_ride[i].append((s, off, sc))
+    rides = sorted(by_ride)
+    for i in rides:
+        by_ride[i].sort()
+    later = [set() for _ in range(len(rides) + 1)]  # CSVs that rides k, k+1, ... can still take
+    for k in range(len(rides) - 1, -1, -1):
+        later[k] = later[k + 1] | {s for s, _, _ in by_ride[rides[k]]}
+    zero = (0,) * len(cands[0][3])
+    memo: dict[tuple[int, frozenset], tuple[tuple, tuple]] = {}
+
+    def best(k: int, used: frozenset) -> tuple[tuple, tuple]:
+        if k == len(rides):
+            return zero, ()
+        key = (k, used & later[k])
+        if key in memo:
+            return memo[key]
+        if len(memo) >= MAX_LINK_STATES:
+            raise GcodError(f"ride linking: a group of {len(rides)} rides is too large to assign exactly")
+        result = None  # the first best wins: links before no link, CSVs in activity_id order
+        for s, off, sc in by_ride[rides[k]]:
+            if s not in used:
+                rest, links = best(k + 1, used | {s})
+                total = tuple(a + b for a, b in zip(sc, rest, strict=True))
+                if result is None or total > result[0]:
+                    result = (total, ((rides[k], s, off), *links))
+        rest, links = best(k + 1, used)  # this ride without a CSV
+        if result is None or rest > result[0]:
+            result = (rest, links)
+        memo[key] = result
+        return result
+
+    return list(best(0, frozenset())[1])
 
 
 # --- time series ---------------------------------------------------------------------
@@ -443,15 +548,14 @@ def _metric(ride: dict, name: str) -> float | None:
     return _float(v[0] if isinstance(v, list) and v else v)
 
 
-def ride_fits_csv(ride: dict, csv: dict | None) -> bool:
-    """Whether a ride's duration and distance metrics describe this CSV."""
-    if not csv or csv["secs"] is None:
-        return False
-    duration = _metric(ride, "workout_time")
-    if duration is None or abs(duration - csv["secs"]) > max(FIT_TIME_S, FIT_RELATIVE * csv["secs"]):
-        return False
-    distance, km = _metric(ride, "total_distance"), csv["km"] or 0.0
-    return abs((distance or 0.0) - km) <= max(FIT_DISTANCE_KM, FIT_RELATIVE * km)
+def ride_misfit(ride: dict, csv: dict | None) -> float:
+    """How far a ride's duration and distance metrics are from a CSV's last `secs` and `km`, in
+    units of the tolerance: at most 1 means the ride fits the CSV; inf when either is unknown."""
+    if not csv or csv["secs"] is None or (duration := _metric(ride, "workout_time")) is None:
+        return math.inf
+    distance, km = _metric(ride, "total_distance") or 0.0, csv["km"] or 0.0
+    return max(abs(duration - csv["secs"]) / max(FIT_TIME_S, FIT_RELATIVE * csv["secs"]),
+               abs(distance - km) / max(FIT_DISTANCE_KM, FIT_RELATIVE * km))
 
 
 def build_activities(az: AthleteZip, kinds: dict[str, str], csvs: dict[str, dict]) -> pl.DataFrame:
@@ -466,7 +570,7 @@ def build_activities(az: AthleteZip, kinds: dict[str, str], csvs: dict[str, dict
     rides = unique_rides(meta.get("RIDES", []))
     csv_ids = [m.activity_id for m in az.activity_members]
     utc = [parse_utc(r.get("date", "")) for r in rides]
-    links = match_rides(utc, csv_ids, fits=lambda i, s: ride_fits_csv(rides[i], csvs.get(s)))
+    links = match_rides(utc, csv_ids, misfit=lambda i, s: ride_misfit(rides[i], csvs.get(s)))
     for r, u, (aid, _) in zip(rides, utc, links, strict=True):
         if aid is None and u is None:
             raise GcodError(f"ride without CSV and without a valid date: {r.get('date')!r}")
